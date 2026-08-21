@@ -2,10 +2,12 @@ import { defineContentScript } from '#imports';
 import { getRndInteger, wait } from '@/entrypoints/utils/helpers';
 import { oncePerPageRun } from '@/entrypoints/utils/oncePerPageRun';
 
-// LOCAL ANALYSIS ONLY — not for shipping. On search tabs the extension opens
-// (tagged with ?marAuto=1), read the first organic Bing result and navigate to
-// it, so its landing page can be reviewed manually before the tab auto-closes.
-// Manual Bing searches lack the marker and are left alone.
+// On search tabs the extension opened (tagged with ?marAuto=1), navigate to the
+// first organic Bing result after a short random delay, so the visit reads as a
+// normal search-and-click rather than a results page nobody looked at. Opt-in
+// from the popup and off by default, since leaving the results page risks the
+// search not being credited. Manual Bing searches lack the marker and are left
+// alone.
 const RESULT_SELECTOR = '#b_results li.b_algo h2 a';
 const MAX_WAIT_MS = 8000;
 // Wait a randomized 1.5–5.5s before opening so it isn't an instant, robotic jump.
@@ -19,11 +21,9 @@ export default defineContentScript({
         if (!oncePerPageRun('_marFirstResultClicked')) return;
 
         const first = await waitForFirstResult();
-        if (!first) {
-            console.warn('[MAR] no organic result found for this query');
-            return;
-        }
-        console.log('[MAR] first result:', first.textContent?.trim(), '→', first.href);
+        // No organic result rendered (ads-only page, layout change, slow load):
+        // leave the tab on the results page rather than guessing at a target.
+        if (!first) return;
         // Randomized pause, then navigate in place. Using location.assign (not
         // anchor.click) keeps navigation in this same background tab: it never
         // spawns a new tab and never activates this one, so the user's current
