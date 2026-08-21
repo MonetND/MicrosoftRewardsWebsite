@@ -9,18 +9,28 @@ import { startSearches } from './searchRunner';
 
 const WEBSITE_URL = 'https://svitspindler.com/microsoft-automatic-rewards';
 
-// Runs whatever the user has enabled: the daily set if "Open daily set
-// automatically" is on, and the Bing searches if "Do daily searches
-// automatically" is on. Both the automatic daily trigger and the popup's
-// "Get rewards" button call this, so the button respects the same toggles
-// rather than forcing searches.
+// Runs whatever the user has enabled: the daily set if "Daily set" is on, and
+// the Bing searches if "Daily searches" is on. Both the automatic daily trigger
+// and the popup's "Get rewards" button call this, so the button respects the
+// same toggles rather than forcing either run.
 export async function runRewards(): Promise<void> {
-    const s = await getStorageItems(['searches', 'timeout', 'closeTime'], StorageValues.SYNC);
+    const s = await getStorageItems(
+        ['searches', 'timeout', 'closeTime', 'active', 'autoDaily'],
+        StorageValues.SYNC
+    );
     const searchTimeout = toInt(s.timeout, DEFAULTS.timeout);
     const searches = toInt(s.searches, DEFAULTS.searches);
     const closeTime = toInt(s.closeTime, DEFAULTS.closeTime);
-    await openDailyRewards();
-    if (searches > 0) {
+    const isDailySetEnabled = s.autoDaily ?? DEFAULTS.autoDaily;
+    const isSearchesEnabled = s.active ?? DEFAULTS.active;
+
+    // The daily set is deliberately NOT awaited: the two runs are independent.
+    // Awaiting it used to serialise the searches behind the dashboard tab
+    // reporting "complete", so a dashboard closed by the user, removed by our
+    // own safety timer, or lost to a torn-down service worker meant not a single
+    // search ran that day.
+    if (isDailySetEnabled) void openDailyRewards().catch(() => {});
+    if (isSearchesEnabled && searches > 0) {
         await startSearches(searchTimeout, searches, closeTime);
     }
 }

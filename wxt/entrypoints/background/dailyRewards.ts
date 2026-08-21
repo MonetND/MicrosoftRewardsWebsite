@@ -11,6 +11,10 @@ const DAILY_LINK_MAX_LINGER_MS = 5000;
 // Fallback: close a daily-set tab this long after it opened even if it never
 // reports "complete".
 const DAILY_LINK_HARD_CLOSE_MS = 20000;
+// Give up waiting on the dashboard to load rather than leaving the promise
+// pending forever when the tab is closed (by the user or by `finish`) or the
+// load event never arrives.
+const DASHBOARD_LOAD_TIMEOUT_MS = 30000;
 
 // Opens the rewards dashboard and tells the content script to click the
 // daily-set cards (that click is what credits the points). The dashboard is
@@ -53,16 +57,24 @@ export async function openDailyRewards(): Promise<void> {
     setTimeout(finish, DAILY_TAB_MAX_LIFETIME_MS);
 
     await new Promise<void>((resolve) => {
+        let isSettled = false;
+        function settle(): void {
+            if (isSettled) return;
+            isSettled = true;
+            browser.tabs.onUpdated.removeListener(loadListener);
+            clearTimeout(giveUpTimer);
+            resolve();
+        }
         function loadListener(updatedId: number, changeInfo: { status?: string }): void {
-            if (updatedId === dashboardId && changeInfo.status === 'complete') {
-                browser.tabs.onUpdated.removeListener(loadListener);
-                setTimeout(() => {
-                    browser.tabs.sendMessage(dashboardId, { action: 'openDaily' }).catch(() => {});
-                    resolve();
-                }, 300);
-            }
+            if (updatedId !== dashboardId || changeInfo.status !== 'complete') return;
+            browser.tabs.onUpdated.removeListener(loadListener);
+            setTimeout(() => {
+                browser.tabs.sendMessage(dashboardId, { action: 'openDaily' }).catch(() => {});
+                settle();
+            }, 300);
         }
         browser.tabs.onUpdated.addListener(loadListener);
+        const giveUpTimer = setTimeout(settle, DASHBOARD_LOAD_TIMEOUT_MS);
     });
 }
 
