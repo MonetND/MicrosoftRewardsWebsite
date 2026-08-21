@@ -3,7 +3,7 @@
 // WXT's `#imports` transform triggers (same reason as searchRunner.test.ts).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { fakeBrowser } from 'wxt/testing';
-import { handleInstallOrUpdate, runRewards } from './dailySchedule';
+import { handleInstallOrUpdate, handleStartup, runRewards } from './dailySchedule';
 import { getStorageItem, setStorageItems } from '@/entrypoints/hooks/useStorage';
 import { StorageValues } from '@/entrypoints/enums/storageValues';
 
@@ -88,6 +88,48 @@ describe('runRewards', () => {
     await flushPendingWork();
 
     expect(urls).toEqual([]);
+  });
+});
+
+describe('handleStartup', () => {
+  beforeEach(() => {
+    fakeBrowser.reset();
+    vi.restoreAllMocks();
+    vi.useFakeTimers();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  // The automatic daily run is the path users actually hit, so the "Daily set"
+  // toggle has to be honoured there too, not just on the popup's button.
+  it('opens no dashboard on the automatic daily run when "Daily set" is off', async () => {
+    const urls = trackCreatedTabs();
+    await seed({ active: true, autoDaily: false });
+
+    await handleStartup();
+    await flushPendingWork();
+
+    expect(urls).not.toContain(DASHBOARD_URL);
+    expect(urls.some((url) => url.startsWith('https://www.bing.com/search?q='))).toBe(true);
+  });
+
+  it('opens the dashboard on the automatic daily run when "Daily set" is on', async () => {
+    const urls = trackCreatedTabs();
+    await seed({ active: false, autoDaily: true });
+
+    await handleStartup();
+    await flushPendingWork();
+
+    expect(urls).toEqual([DASHBOARD_URL]);
+  });
+
+  it('drops a tab registry left over from the previous session', async () => {
+    // Both toggles off, so no run starts and re-registers tabs of its own.
+    await seed({ active: false, autoDaily: false });
+    await setStorageItems({ trackedTabs: { 7: 1 } }, StorageValues.LOCAL);
+
+    await handleStartup();
+
+    expect(await getStorageItem('trackedTabs', StorageValues.LOCAL)).toEqual({});
   });
 });
 

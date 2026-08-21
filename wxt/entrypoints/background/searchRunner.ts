@@ -6,8 +6,13 @@ import { getStorageItem, getStorageItems, setStorageItem, setStorageItems } from
 import { StorageValues } from '@/entrypoints/enums/storageValues';
 import { DEFAULTS } from '@/entrypoints/utils/settings';
 import { clearBadge, setSearchCountBadge } from '@/entrypoints/utils/browserAction';
+import { trackTab, untrackTab } from './tabCleanup';
 
 const ALARM_NAME = 'openTabAlarm';
+// A search tab closes `closeTime` after it finishes loading, so the durable
+// cleanup deadline has to allow for the load on top of that — a slow page must
+// not be swept away before its search has had a chance to register.
+const SEARCH_TAB_LOAD_ALLOWANCE_MS = 60000;
 
 // Opens tab #1 immediately (currentSearch = 1), then schedules the rest via alarm.
 export async function startSearches(searchTimeout: number, searches: number, closeTimeSeconds: number): Promise<void> {
@@ -49,7 +54,9 @@ export async function handleAlarmStep(alarm: { name: string }): Promise<void> {
 export async function stopSearches(): Promise<void> {
     await setStorageItem('isSearching', false, StorageValues.SYNC);
     clearBadge();
-    await browser.alarms.clearAll();
+    // Only this run's alarm: clearAll() also wiped the tab-cleanup sweep, which
+    // left every tab the run had opened on screen for good.
+    await browser.alarms.clear(ALARM_NAME);
 }
 
 // Turning "Daily searches" off has to stop a run that is already in flight —
@@ -87,6 +94,9 @@ async function openSearchTab(closeTimeMs: number): Promise<void> {
 async function openAndClose(url: string, closeTimeMs: number): Promise<void> {
     const tab = await browser.tabs.create({ url, active: false });
     const tabId = tab.id!;
+    // Backstop for the close below, whose timer and listener are both lost when
+    // the service worker is torn down.
+    await trackTab(tabId, closeTimeMs + SEARCH_TAB_LOAD_ALLOWANCE_MS);
     function listener(updatedId: number, changeInfo: { status?: string }): void {
         if (updatedId === tabId && changeInfo.status === 'complete') {
             browser.tabs.onUpdated.removeListener(listener);
@@ -98,7 +108,10 @@ async function openAndClose(url: string, closeTimeMs: number): Promise<void> {
 
 function waitAndClose(id: number, closeTimeMs: number): void {
     const timeout = closeTimeMs <= 0 ? 500 : closeTimeMs;
-    setTimeout(() => {
-        browser.tabs.get(id).then(() => browser.tabs.remove(id)).catch(() => {});
-    }, Math.max(timeout - 500, 0) + getRndInteger(0, 1000));
+    setTimeout(() => void closeTab(id), Math.max(timeout - 500, 0) + getRndInteger(0, 1000));
+}
+
+async function closeTab(id: number): Promise<void> {
+    await browser.tabs.get(id).then(() => browser.tabs.remove(id)).catch(() => {});
+    await untrackTab(id);
 }

@@ -3,9 +3,10 @@ import { getStorageItems, setStorageItem, setStorageItems } from '@/entrypoints/
 import { StorageValues } from '@/entrypoints/enums/storageValues';
 import { toInt } from '@/entrypoints/utils/search';
 import { DEFAULTS } from '@/entrypoints/utils/settings';
-import { clearBadge, setBadgeText } from '@/entrypoints/utils/browserAction';
+import { setBadgeText } from '@/entrypoints/utils/browserAction';
 import { openDailyRewards } from './dailyRewards';
-import { startSearches } from './searchRunner';
+import { startSearches, stopSearches } from './searchRunner';
+import { clearTrackedTabs } from './tabCleanup';
 
 const WEBSITE_URL = 'https://svitspindler.com/microsoft-automatic-rewards';
 
@@ -71,9 +72,11 @@ export async function handleStartup(): Promise<void> {
     // today's run is considered: alarms outlive the session and would resume
     // opening Bing tabs on their own, and resetting the flag afterwards used to
     // clobber the `isSearching` that a fresh run had just set.
-    await browser.alarms.clearAll();
-    await setStorageItems({ isSearching: false, currentSearch: 0 }, StorageValues.SYNC);
-    clearBadge();
+    await stopSearches();
+    await setStorageItems({ currentSearch: 0 }, StorageValues.SYNC);
+    // Tab ids do not survive a browser restart, so anything still registered for
+    // cleanup points at tabs that no longer exist.
+    await clearTrackedTabs();
     const s = await getStorageItems(['active', 'autoDaily'], StorageValues.SYNC);
     if (s.active || s.autoDaily) await checkLastOpened();
 }
