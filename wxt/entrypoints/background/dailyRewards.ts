@@ -1,5 +1,6 @@
 import { browser } from 'wxt/browser';
 import { getRndInteger } from '@/entrypoints/utils/helpers';
+import { trackTab, untrackTab } from './tabCleanup';
 
 // Safety cap: close the dashboard tab even if the content script never reports
 // done (page failed to render the daily sets, message dropped, etc.).
@@ -11,6 +12,10 @@ const DAILY_LINK_MAX_LINGER_MS = 5000;
 // Fallback: close a daily-set tab this long after it opened even if it never
 // reports "complete".
 const DAILY_LINK_HARD_CLOSE_MS = 20000;
+// Give up waiting on the dashboard to load rather than leaving the promise
+// pending forever when the tab is closed (by the user or by `finish`) or the
+// load event never arrives.
+const DASHBOARD_LOAD_TIMEOUT_MS = 30000;
 
 // Opens the rewards dashboard and tells the content script to click the
 // daily-set cards (that click is what credits the points). The dashboard is
@@ -24,6 +29,9 @@ export async function openDailyRewards(): Promise<void> {
 
     const tab = await browser.tabs.create({ url: 'https://rewards.bing.com/dashboard', active: true });
     const dashboardId = tab.id!;
+    // The `finish` timer below is the precise close; this is the backstop for
+    // when the service worker is torn down before it ever fires.
+    await trackTab(dashboardId, DAILY_TAB_MAX_LIFETIME_MS);
 
     function onCreated(created: { id?: number; openerTabId?: number }): void {
         if (created.openerTabId !== dashboardId || created.id == null) return;
@@ -41,6 +49,7 @@ export async function openDailyRewards(): Promise<void> {
         browser.runtime.onMessage.removeListener(doneListener);
         browser.tabs.onCreated.removeListener(onCreated);
         browser.tabs.remove(dashboardId).catch(() => {});
+        void untrackTab(dashboardId);
         if (previousActiveTabId != null) {
             browser.tabs.update(previousActiveTabId, { active: true }).catch(() => {});
         }
@@ -53,16 +62,24 @@ export async function openDailyRewards(): Promise<void> {
     setTimeout(finish, DAILY_TAB_MAX_LIFETIME_MS);
 
     await new Promise<void>((resolve) => {
+        let isSettled = false;
+        function settle(): void {
+            if (isSettled) return;
+            isSettled = true;
+            browser.tabs.onUpdated.removeListener(loadListener);
+            clearTimeout(giveUpTimer);
+            resolve();
+        }
         function loadListener(updatedId: number, changeInfo: { status?: string }): void {
-            if (updatedId === dashboardId && changeInfo.status === 'complete') {
-                browser.tabs.onUpdated.removeListener(loadListener);
-                setTimeout(() => {
-                    browser.tabs.sendMessage(dashboardId, { action: 'openDaily' }).catch(() => {});
-                    resolve();
-                }, 300);
-            }
+            if (updatedId !== dashboardId || changeInfo.status !== 'complete') return;
+            browser.tabs.onUpdated.removeListener(loadListener);
+            setTimeout(() => {
+                browser.tabs.sendMessage(dashboardId, { action: 'openDaily' }).catch(() => {});
+                settle();
+            }, 300);
         }
         browser.tabs.onUpdated.addListener(loadListener);
+        const giveUpTimer = setTimeout(settle, DASHBOARD_LOAD_TIMEOUT_MS);
     });
 }
 
@@ -78,12 +95,14 @@ async function getActiveTabId(): Promise<number | undefined> {
 // Close a daily-set search tab a random few seconds after it finishes loading,
 // with a hard cap in case it never reports "complete".
 function closeDailyTabAfterLoad(tabId: number): void {
+    void trackTab(tabId, DAILY_LINK_HARD_CLOSE_MS);
     let closed = false;
     function close(): void {
         if (closed) return;
         closed = true;
         browser.tabs.onUpdated.removeListener(loadListener);
         browser.tabs.get(tabId).then(() => browser.tabs.remove(tabId)).catch(() => {});
+        void untrackTab(tabId);
     }
     function loadListener(updatedId: number, changeInfo: { status?: string }): void {
         if (updatedId === tabId && changeInfo.status === 'complete') {

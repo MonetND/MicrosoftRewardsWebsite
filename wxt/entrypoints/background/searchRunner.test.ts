@@ -100,7 +100,32 @@ describe('searchRunner', () => {
       await stopSearches();
 
       expect(await getStorageItem<boolean>('isSearching', StorageValues.SYNC)).toBe(false);
-      expect(await fakeBrowser.alarms.getAll()).toEqual([]);
+      expect(await fakeBrowser.alarms.get('openTabAlarm')).toBeUndefined();
+    });
+
+    // Regression: this used to clearAll(), which also wiped the tab-cleanup
+    // sweep and left every tab the run had opened on screen for good.
+    it('leaves the tab-cleanup alarm running', async () => {
+      await seed({ isSearching: true });
+      fakeBrowser.alarms.create('closeStaleTabs', { periodInMinutes: 1 });
+
+      await stopSearches();
+
+      expect(await fakeBrowser.alarms.get('closeStaleTabs')).toBeDefined();
+    });
+  });
+
+  describe('search tab cleanup', () => {
+    // A search tab's own close timer does not survive the service worker being
+    // torn down, so every one is registered for the durable sweep as well.
+    it('registers each search tab for the durable sweep', async () => {
+      await seed({});
+
+      await startSearches(60, 5, 5);
+
+      const tracked = await getStorageItem<Record<string, number>>('trackedTabs', StorageValues.LOCAL);
+      expect(Object.keys(tracked ?? {})).toHaveLength(1);
+      expect(await fakeBrowser.alarms.get('closeStaleTabs')).toBeDefined();
     });
   });
 });

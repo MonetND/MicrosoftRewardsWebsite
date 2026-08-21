@@ -3,24 +3,35 @@ import { getStorageItems, setStorageItem, setStorageItems } from '@/entrypoints/
 import { StorageValues } from '@/entrypoints/enums/storageValues';
 import { toInt } from '@/entrypoints/utils/search';
 import { DEFAULTS } from '@/entrypoints/utils/settings';
-import { clearBadge, setBadgeText } from '@/entrypoints/utils/browserAction';
+import { setBadgeText } from '@/entrypoints/utils/browserAction';
 import { openDailyRewards } from './dailyRewards';
-import { startSearches } from './searchRunner';
+import { startSearches, stopSearches } from './searchRunner';
+import { clearTrackedTabs } from './tabCleanup';
 
 const WEBSITE_URL = 'https://svitspindler.com/microsoft-automatic-rewards';
 
-// Runs whatever the user has enabled: the daily set if "Open daily set
-// automatically" is on, and the Bing searches if "Do daily searches
-// automatically" is on. Both the automatic daily trigger and the popup's
-// "Get rewards" button call this, so the button respects the same toggles
-// rather than forcing searches.
+// Runs whatever the user has enabled: the daily set if "Daily set" is on, and
+// the Bing searches if "Daily searches" is on. Both the automatic daily trigger
+// and the popup's "Get rewards" button call this, so the button respects the
+// same toggles rather than forcing either run.
 export async function runRewards(): Promise<void> {
-    const s = await getStorageItems(['searches', 'timeout', 'closeTime'], StorageValues.SYNC);
+    const s = await getStorageItems(
+        ['searches', 'timeout', 'closeTime', 'active', 'autoDaily'],
+        StorageValues.SYNC
+    );
     const searchTimeout = toInt(s.timeout, DEFAULTS.timeout);
     const searches = toInt(s.searches, DEFAULTS.searches);
     const closeTime = toInt(s.closeTime, DEFAULTS.closeTime);
-    await openDailyRewards();
-    if (searches > 0) {
+    const isDailySetEnabled = s.autoDaily ?? DEFAULTS.autoDaily;
+    const isSearchesEnabled = s.active ?? DEFAULTS.active;
+
+    // The daily set is deliberately NOT awaited: the two runs are independent.
+    // Awaiting it used to serialise the searches behind the dashboard tab
+    // reporting "complete", so a dashboard closed by the user, removed by our
+    // own safety timer, or lost to a torn-down service worker meant not a single
+    // search ran that day.
+    if (isDailySetEnabled) void openDailyRewards().catch(() => {});
+    if (isSearchesEnabled && searches > 0) {
         await startSearches(searchTimeout, searches, closeTime);
     }
 }
@@ -61,9 +72,11 @@ export async function handleStartup(): Promise<void> {
     // today's run is considered: alarms outlive the session and would resume
     // opening Bing tabs on their own, and resetting the flag afterwards used to
     // clobber the `isSearching` that a fresh run had just set.
-    await browser.alarms.clearAll();
-    await setStorageItems({ isSearching: false, currentSearch: 0 }, StorageValues.SYNC);
-    clearBadge();
+    await stopSearches();
+    await setStorageItems({ currentSearch: 0 }, StorageValues.SYNC);
+    // Tab ids do not survive a browser restart, so anything still registered for
+    // cleanup points at tabs that no longer exist.
+    await clearTrackedTabs();
     const s = await getStorageItems(['active', 'autoDaily'], StorageValues.SYNC);
     if (s.active || s.autoDaily) await checkLastOpened();
 }

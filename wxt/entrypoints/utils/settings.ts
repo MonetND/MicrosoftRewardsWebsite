@@ -9,7 +9,9 @@ export const DEFAULTS = {
     closeTime: 5,
     // When on, each search tab opens its first organic result after a short
     // random delay (without stealing focus); otherwise the tab just loads the SERP.
-    openFirstResult: true,
+    // Off by default: navigating off the results page risks the search not being
+    // credited, so this stays opt-in.
+    openFirstResult: false,
 } as const;
 
 // Selecting an account level sets a sensible default number of daily searches
